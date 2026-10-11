@@ -1,0 +1,52 @@
+name: Caçar instância A1
+on:
+  schedule: [{ cron: '*/5 * * * *' }]
+  workflow_dispatch:
+
+jobs:
+  tentar:
+    runs-on: ubuntu-latest
+    env:
+      OCI_CLI_USER: ${{ secrets.OCI_USER }}
+      OCI_CLI_TENANCY: ${{ secrets.OCI_TENANCY }}
+      OCI_CLI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+      OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_KEY }}
+      OCI_CLI_REGION: sa-saopaulo-1
+      COMPARTMENT_ID: ${{ secrets.COMPARTMENT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Instalar OCI CLI
+        run: pip install -q oci-cli
+
+      - name: Já existe?
+        id: check
+        run: |
+          N=$(oci compute instance list -c "$COMPARTMENT_ID" --display-name vm-paroquia \
+              --query "length(data[?\"lifecycle-state\"!='TERMINATED'])" --raw-output || echo 0)
+          echo "existe=${N:-0}" >> "$GITHUB_OUTPUT"
+
+      - name: Tentar criar
+        if: steps.check.outputs.existe == '0'
+        run: |
+          echo "${{ secrets.SSH_PUB }}" > key.pub
+          set +e
+          OUT=$(oci compute instance launch \
+            --availability-domain "${{ secrets.AD }}" \
+            --compartment-id "$COMPARTMENT_ID" \
+            --shape VM.Standard.A1.Flex \
+            --shape-config '{"ocpus":2,"memoryInGBs":12}' \
+            --image-id "${{ secrets.IMAGE_ID }}" \
+            --subnet-id "${{ secrets.SUBNET_ID }}" \
+            --assign-public-ip true \
+            --display-name vm-paroquia \
+            --ssh-authorized-keys-file key.pub \
+            --user-data-file cloud-init.yaml 2>&1)
+          RC=$?
+          echo "$OUT" | tail -5
+          if [ $RC -ne 0 ]; then
+            echo "$OUT" | grep -qiE "out of (host )?capacity" && { echo "Sem capacidade, tenta depois."; exit 0; }
+            echo "ERRO REAL - confira os secrets"; exit 1
+          fi
+          echo "VM CRIADA! Desative este workflow."
+          exit 1
